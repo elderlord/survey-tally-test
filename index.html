@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>설문 집계기</title>
+</head>
+<body>
+<!-- 계산 로직: DOM에 손대지 않는다. test/tally.test.js가 이 블록만 꺼내 시험한다. -->
+<script id="tally-core">
+(function (root) {
+  'use strict';
+
+  // 엑셀 복사 형식(탭 구분, 줄바꿈 구분, 필요한 칸만 큰따옴표로 감쌈)을 2차원 배열로 읽는다.
+  // 칸이 하나도 없는 빈 줄은 건너뛴다.
+  function parseTsv(text) {
+    var s = String(text);
+    var n = s.length;
+    var rows = [];
+    var row = [];
+    var i = 0;
+
+    function isEnd(ch) {
+      return ch === undefined || ch === '\t' || ch === '\r' || ch === '\n';
+    }
+
+    while (true) {
+      var field = null;
+
+      if (s[i] === '"') {
+        var j = i + 1;
+        var val = '';
+        while (j < n) {
+          if (s[j] === '"') {
+            if (s[j + 1] === '"') { val += '"'; j += 2; continue; }
+            break;
+          }
+          val += s[j];
+          j++;
+        }
+        if (j < n && isEnd(s[j + 1])) {
+          field = val;
+          i = j + 1;
+        }
+        // 닫는 따옴표가 제자리에 없으면 따옴표를 글자 그대로 읽는다.
+      }
+
+      if (field === null) {
+        var start = i;
+        while (i < n && !isEnd(s[i])) i++;
+        field = s.slice(start, i);
+      }
+
+      row.push(field);
+
+      if (s[i] === '\t') {
+        i++;
+        continue;
+      }
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+      if (i >= n) break;
+      if (s[i] === '\r' && s[i + 1] === '\n') i += 2;
+      else i++;
+      if (i >= n) break;
+    }
+    return rows;
+  }
+
+  // 앞뒤 공백을 지운 값이 1~5면 'valid', 비었으면 'blank', 그 밖은 'excluded'.
+  function classifyCell(value) {
+    if (value === undefined || value === null) return 'blank';
+    var t = String(value).trim();
+    if (t === '') return 'blank';
+    if (t.length === 1 && t >= '1' && t <= '5') return 'valid';
+    return 'excluded';
+  }
+
+  // 합 ÷ 수를 소수 셋째 자리에서 반올림해 둘째 자리까지. 정수 연산으로 부동소수점 오차를 피한다.
+  function formatAverage(sum, count) {
+    if (!count) return '-';
+    var hundredths = Math.floor((sum * 200 + count) / (2 * count));
+    var whole = Math.floor(hundredths / 100);
+    var frac = hundredths % 100;
+    return whole + '.' + (frac < 10 ? '0' : '') + frac;
+  }
+
+  // 붙여넣은 글을 집계한다.
+  // 성공: { ok: true, rowCount, questions: [{ name, valid, sum, average, blank, excluded }] }
+  // 실패: { ok: false, error: 'empty' | 'noQuestions' }
+  function tally(text) {
+    var rows = parseTsv(text);
+    if (rows.length === 0) return { ok: false, error: 'empty' };
+
+    var header = rows[0];
+    if (header.length < 2) return { ok: false, error: 'noQuestions' };
+
+    var questions = [];
+    for (var c = 1; c < header.length; c++) {
+      var name = String(header[c]).trim();
+      questions.push({
+        name: name === '' ? '(' + (c + 1) + '번째 열)' : name,
+        valid: 0, sum: 0, average: '-', blank: 0, excluded: 0
+      });
+    }
+
+    for (var r = 1; r < rows.length; r++) {
+      var row = rows[r];
+      for (var q = 0; q < questions.length; q++) {
+        var cell = row[q + 1];
+        var kind = classifyCell(cell);
+        var stat = questions[q];
+        if (kind === 'valid') {
+          stat.valid++;
+          stat.sum += Number(String(cell).trim());
+        } else if (kind === 'blank') {
+          stat.blank++;
+        } else {
+          stat.excluded++;
+        }
+      }
+    }
+
+    for (var k = 0; k < questions.length; k++) {
+      questions[k].average = formatAverage(questions[k].sum, questions[k].valid);
+    }
+
+    return { ok: true, rowCount: rows.length - 1, questions: questions };
+  }
+
+  root.SurveyTally = {
+    parseTsv: parseTsv,
+    classifyCell: classifyCell,
+    formatAverage: formatAverage,
+    tally: tally
+  };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+</script>
+</body>
+</html>
